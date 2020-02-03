@@ -20,7 +20,8 @@ class CovModel:
                  spline=None,
                  spline_monotonicity=None,
                  spline_convexity=None,
-                 soln_name=None):
+                 soln_name=None,
+                 add_random_effect=False):
         """Constructor of the CovModel.
 
         Args:
@@ -35,6 +36,8 @@ class CovModel:
                 Spline shape prior, indicate if spline is convex or concave.
             soln_name (str):
                 Name of the corresponding covariates multiplier.
+            add_random_effect (bool, optional):
+                If include the random effects.
         """
         # check the input
         assert isinstance(cov_name, str)
@@ -44,6 +47,7 @@ class CovModel:
         if spline_convexity is not None:
             assert spline_convexity in ['convex', 'concave']
         assert isinstance(soln_name, str) or soln_name is None
+        assert isinstance(add_random_effect, bool)
 
         self.cov_name = cov_name
         self.spline = spline
@@ -60,6 +64,7 @@ class CovModel:
             self.num_vars = spline.num_spline_bases - 1
         else:
             self.num_vars = 1
+        self.add_random_effect = add_random_effect
 
     def create_design_mat(self, cwdata):
         """Create design matrix.
@@ -163,6 +168,7 @@ class CWModel:
 
         # variable names
         self.vars = [dorm for dorm in self.cwdata.unique_dorms]
+        self.cov_names = [model.cov_name for model in self.cov_models]
 
         # dimensions
         self.num_vars_per_dorm = sum([model.num_vars
@@ -175,6 +181,13 @@ class CWModel:
         self.var_idx = {
             var: var_idx[i]
             for i, var in enumerate(self.vars)
+        }
+        cov_var_sizes = np.array([model.num_vars
+                                  for model in self.cov_models])
+        cov_var_idx = utils.sizes_to_indices(cov_var_sizes)
+        self.cov_var_idx = {
+            model.cov_name: cov_var_idx[i]
+            for i, model in enumerate(self.cov_models)
         }
 
         # create design matrix
@@ -325,15 +338,31 @@ class CWModel:
         # dimensions for limetr
         n = self.cwdata.study_sizes
         k_beta = self.num_vars
-        k_gamma = 1
+        k_gamma = self.num_vars
         y = self.cwdata.obs
         s = self.cwdata.obs_se
         x = self.design_mat
-        z = np.ones((self.cwdata.num_obs, 1))
+        z = self.design_mat
 
-        uprior = np.array([[-np.inf]*self.num_vars + [0.0],
-                           [np.inf]*self.num_vars + [np.inf]])
+        uprior = np.array([[-np.inf]*self.num_vars + [0.0]*self.num_vars,
+                           [np.inf]*(2*self.num_vars)])
+        # lock fixed and random effects for the gold dorms to 0
         uprior[:, self.var_idx[self.gold_dorm]] = 0.0
+        uprior[:, self.num_vars + self.var_idx[self.gold_dorm]] = 0.0
+        # lock the extra random effects
+        if not all([model.add_random_effect
+                    for model in self.cov_models]):
+            # indices of all variables that do not have random effect
+            no_random_effect_idx = np.hstack([
+                self.cov_var_idx[model.cov_name]
+                for model in self.cov_models
+                if not model.add_random_effect
+            ])
+            no_random_effect_idx = np.hstack([
+                no_random_effect_idx + i*self.num_vars_per_dorm + self.num_vars
+                for i in range(self.cwdata.num_dorms)
+            ])
+            uprior[:, no_random_effect_idx] = 0.0
 
         if self.constraint_mat is None:
             cfun = None
@@ -342,7 +371,7 @@ class CWModel:
         else:
             num_constraints = self.constraint_mat.shape[0]
             cmat = np.hstack((self.constraint_mat,
-                              np.zeros((num_constraints, 1))))
+                              np.zeros((num_constraints, k_gamma))))
 
             cvec = np.array([[-np.inf]*num_constraints,
                              [0.0]*num_constraints])
@@ -454,12 +483,11 @@ class CWModel:
         if study_id is not None:
             random_effects = np.array([
                 self.random_vars[sid]
-                if sid in self.random_vars else 0.0
+                if sid in self.random_vars else np.zeros(self.num_vars)
                 for sid in df[study_id]
             ])
         else:
-            random_effects = np.zeros(df.shape[0])
-        random_effects[df[alt_dorms].values == self.gold_dorm] = 0.0
+            random_effects = np.zeros((df.shape[0], self.num_vars))
 
         # compute the corresponding gold_dorm value
         if self.obs_type == 'diff_log':
@@ -476,10 +504,10 @@ class CWModel:
             )
 
         transformed_ref_vals_mean = transformed_alt_vals_mean - \
-            new_design_mat.dot(self.beta) - random_effects
+            np.sum(new_design_mat*(self.beta + random_effects), axis=1)
         transformed_ref_vals_sd = transformed_alt_vals_se.copy()
         transformed_ref_vals_sd += np.array([
-            (new_design_mat[i]**2).dot(self.beta_sd**2) + np.sqrt(self.gamma[0])
+            (new_design_mat[i]**2).dot(self.beta_sd**2 + np.sqrt(self.gamma[0]))
             if dorm != self.gold_dorm else 0.0
             for i, dorm in enumerate(df[alt_dorms])
         ])

@@ -51,7 +51,7 @@ def sizes_to_indices(sizes):
     b = 0
     for i, size in enumerate(sizes):
         b += size
-        indices.append(range(a, b))
+        indices.append(np.arange(a, b))
         a += size
 
     return indices

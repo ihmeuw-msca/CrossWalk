@@ -33,10 +33,13 @@ def test_is_numerical_array(x, shape):
 
 
 @pytest.mark.parametrize("sizes", [np.array([1, 2, 3])])
-@pytest.mark.parametrize("indices", [[range(0, 1), range(1, 3), range(3, 6)]])
+@pytest.mark.parametrize("indices", [[np.arange(0, 1),
+                                      np.arange(1, 3),
+                                      np.arange(3, 6)]])
 def test_sizes_to_indices(sizes, indices):
     my_indices = utils.sizes_to_indices(sizes)
-    assert all([my_indices[i] == indices[i] for i in range(len(sizes))])
+    assert all([np.allclose(my_indices[i], indices[i])
+                for i in range(len(sizes))])
 
 
 @pytest.mark.parametrize("x", [np.array([1, 1, 2, 2, 3])])
